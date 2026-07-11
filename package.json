@@ -1,7 +1,7 @@
 {
   "name": "pixelvault-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Copy an image, paste a hosted URL — a macOS/Linux menubar app for feeding images to cloud coding agents. By PixelVault.",
   "license": "MIT",
   "author": "PixelVault",

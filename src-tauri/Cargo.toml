@@ -1,6 +1,6 @@
 [package]
 name = "pixelvault-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Copy an image, paste a hosted URL — PixelVault menubar app"
 authors = ["PixelVault"]
 license = "MIT"
