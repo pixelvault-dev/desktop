@@ -1,0 +1,36 @@
+[package]
+name = "pixelvault-desktop"
+version = "0.1.0"
+description = "Copy an image, paste a hosted URL — PixelVault menubar app"
+authors = ["PixelVault"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin (Windows quirk).
+name = "pixelvault_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+# Global hotkey for Mode B (active screen-region capture).
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Clipboard read/write (RGBA image in, text out). Used directly in the watcher
+# thread instead of the Tauri clipboard plugin for a stable image API.
+arboard = "3"
+# Encode clipboard RGBA → PNG before upload.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Blocking multipart upload from the watcher thread. rustls to avoid OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "multipart",
+  "json",
+  "rustls-tls",
+] }
