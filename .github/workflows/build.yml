@@ -55,8 +55,36 @@ jobs:
 
       - run: npm ci
 
+      # ── Apple code signing + notarization (macOS) — DISABLED until enabled ──
+      # This step ONLY runs (and only sets the APPLE_* vars) when the repo variable
+      # APPLE_SIGNING_ENABLED == 'true'. When off, the vars are absent entirely and
+      # Tauri builds UNSIGNED exactly as today. (They must be ABSENT, not empty — an
+      # empty APPLE_CERTIFICATE makes the Tauri bundler attempt `security import`
+      # and fail.) To turn signing on:
+      #   1. Actions → Variables: add  APPLE_SIGNING_ENABLED = true
+      #   2. Actions → Secrets: add
+      #      APPLE_CERTIFICATE            base64 of the Developer ID .p12
+      #      APPLE_CERTIFICATE_PASSWORD   the .p12 export password
+      #      APPLE_SIGNING_IDENTITY       "Developer ID Application: Name (TEAMID)"
+      #      APPLE_ID                     your Apple ID email
+      #      APPLE_PASSWORD               an app-specific password (notarization)
+      #      APPLE_TEAM_ID                your 10-char Team ID
+      #   3. Cut the next v* tag → signed + notarized .dmg.
+      - name: Configure Apple signing
+        if: ${{ matrix.platform == 'macos-latest' && vars.APPLE_SIGNING_ENABLED == 'true' }}
+        run: |
+          {
+            echo "APPLE_CERTIFICATE=${{ secrets.APPLE_CERTIFICATE }}"
+            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}"
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
       # Builds the app on both platforms. On a `v*` tag it also creates/updates a
-      # draft GitHub Release with the bundles attached.
+      # draft GitHub Release with the bundles attached. Signing (above) is picked
+      # up from the job env when enabled.
       - name: Build (and release on tags)
         uses: tauri-apps/tauri-action@v0
         env:
