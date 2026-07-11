@@ -17,6 +17,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItemBuilder::with_id("status", "PixelVault — watching clipboard")
         .enabled(false)
         .build(app)?;
+    let account = MenuItemBuilder::with_id("account", "Not signed in")
+        .enabled(false)
+        .build(app)?;
     let counter = MenuItemBuilder::with_id(
         "counter",
         format!("Free uploads left: {}/{}", remaining, state::FREE_UPLOAD_LIMIT),
@@ -37,11 +40,12 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     }
 
     let toggle = MenuItemBuilder::with_id("toggle", "Pause watching").build(app)?;
-    let settings = MenuItemBuilder::with_id("settings", "Open Settings…").build(app)?;
+    let settings = MenuItemBuilder::with_id("settings", "Account & Settings…").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit PixelVault").build(app)?;
 
     let mut builder = MenuBuilder::new(app)
         .item(&status)
+        .item(&account)
         .item(&counter)
         .separator()
         .item(&recent_header);
@@ -62,6 +66,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         *st.counter_item.lock().unwrap() = Some(counter.clone());
         *st.toggle_item.lock().unwrap() = Some(toggle.clone());
         *st.recent_items.lock().unwrap() = recent_items;
+        *st.account_item.lock().unwrap() = Some(account.clone());
     }
 
     let tray = TrayIconBuilder::with_id("main-tray")

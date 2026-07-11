@@ -1,19 +1,15 @@
-//! PNG encoding + keyless upload to the PixelVault API.
+//! PNG encoding + upload to the PixelVault API.
 //!
-//! v0 uses the **keyless** (anonymous) path: `POST /v1/images` with no auth →
-//! a temporary (~30-day) upload. Response envelope: `{ "data": { "url": ... } }`.
+//! - No key → the **keyless** (anonymous) path: temporary (~30-day) upload.
+//! - With a key → a **keyed** upload; pass `expires_in` for an ephemeral one.
+//! Response envelope: `{ "data": { "url": ... } }`.
 
 use std::io::Cursor;
 use std::time::Duration;
 
 use serde::Deserialize;
 
-const DEFAULT_API_BASE: &str = "https://api.pixelvault.dev";
-
-/// API base URL. Override with `PIXELVAULT_API_BASE` for staging/local testing.
-fn api_base() -> String {
-    std::env::var("PIXELVAULT_API_BASE").unwrap_or_else(|_| DEFAULT_API_BASE.to_string())
-}
+use crate::config::api_base;
 
 #[derive(Deserialize)]
 struct UploadEnvelope {
@@ -36,8 +32,16 @@ pub fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, Str
     Ok(out.into_inner())
 }
 
-/// Upload a PNG to the keyless endpoint and return the hosted URL.
-pub fn upload_png(png: Vec<u8>) -> Result<String, String> {
+/// Upload a PNG and return the hosted URL.
+///
+/// - `api_key`: `Some` → keyed (permanent unless `expires_in` set); `None` →
+///   anonymous temporary.
+/// - `expires_in`: keyed ephemeral TTL in seconds (ignored when anonymous).
+pub fn upload_png(
+    png: Vec<u8>,
+    api_key: Option<&str>,
+    expires_in: Option<u64>,
+) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -47,15 +51,19 @@ pub fn upload_png(png: Vec<u8>) -> Result<String, String> {
         .file_name("clipboard.png")
         .mime_str("image/png")
         .map_err(|e| e.to_string())?;
-    let form = reqwest::blocking::multipart::Form::new().part("file", part);
+    let mut form = reqwest::blocking::multipart::Form::new().part("file", part);
+    if api_key.is_some() {
+        if let Some(secs) = expires_in {
+            form = form.text("expires_in", secs.to_string());
+        }
+    }
 
-    let url = format!("{}/v1/images", api_base());
-    let resp = client
-        .post(&url)
-        .multipart(form)
-        .send()
-        .map_err(|e| e.to_string())?;
+    let mut req = client.post(format!("{}/v1/images", api_base())).multipart(form);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
 
+    let resp = req.send().map_err(|e| e.to_string())?;
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().unwrap_or_default();

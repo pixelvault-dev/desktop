@@ -11,9 +11,10 @@ Daytona/e2b sandboxes). The remote side needs nothing installed; it just receive
 a URL. This is a distribution/top-of-funnel client for **PixelVault**
 (`api.pixelvault.dev`); the backend lives in the main `pixelvault` repo.
 
-**Status:** v0 (slices 1–2). Passive clipboard watch + active-hotkey capture →
-keyless upload → URL on clipboard. macOS-first; Linux builds but is less tested.
-No sign-in yet (slice 3). Design specs live in the main repo:
+**Status:** Passive clipboard watch + active-hotkey capture → upload → URL on
+clipboard, with **sign-in** (device login): signed-in users get keyed uploads
+(ephemeral, 30d); signed-out users get the anonymous trial. macOS-first; Linux
+builds but is less tested. Design specs live in the main repo:
 `docs/specs/clipboard-desktop-app.md` and `docs/specs/device-login.md`.
 
 ## Stack
@@ -58,7 +59,10 @@ PIXELVAULT_API_BASE=https://api-staging.pixelvault.dev npm run tauri dev
 - `capture.rs` — **Mode B (active):** global hotkey **⇧⌘2** → spawns a thread that
   runs macOS's native `/usr/sbin/screencapture -i <tempfile>`, uploads the PNG,
   and writes the URL to the clipboard.
-- `upload.rs` — RGBA→PNG encode + keyless multipart `POST /v1/images`; parses the
+- `auth.rs` — sign-in via `/v1/auth/device/{start,complete}`; stores the API key
+  in the OS keychain (`keyring`). `config.rs` holds the shared API base.
+- `upload.rs` — RGBA→PNG encode + multipart `POST /v1/images` (keyed with a
+  Bearer key + `expires_in` when signed in, else anonymous); parses the
   `{ "data": { "url": ... } }` envelope. Base URL from `PIXELVAULT_API_BASE`.
 - `state.rs` — `TrialState`: the free-upload counter (limit 5) + last 5 upload
   URLs, persisted to `<app_config_dir>/state.json`.

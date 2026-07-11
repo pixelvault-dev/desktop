@@ -72,6 +72,66 @@ kbd {
   color: #888;
 }
 
+/* Account / sign-in card */
+.account {
+  margin: 0 0 20px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  text-align: left;
+}
+.acct-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.acct-sub {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #666;
+}
+.acct-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.acct-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  font: inherit;
+}
+.acct-row button,
+button.secondary {
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #396cd8;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.acct-row button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+button.secondary {
+  background: #eee;
+  color: #333;
+}
+.acct-msg {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #666;
+  min-height: 1em;
+}
+.acct-msg.error {
+  color: #c0392b;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;
@@ -83,5 +143,22 @@ kbd {
   }
   .muted {
     color: #aaa;
+  }
+  .account {
+    background: #1c1c1c;
+    border-color: #444;
+  }
+  .acct-sub,
+  .acct-msg {
+    color: #aaa;
+  }
+  .acct-row input {
+    background: #111;
+    border-color: #444;
+    color: #f6f6f6;
+  }
+  button.secondary {
+    background: #333;
+    color: #eee;
   }
 }
