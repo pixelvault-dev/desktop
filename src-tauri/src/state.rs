@@ -57,12 +57,49 @@ impl TrialState {
         self.recent.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
-    /// Record an anonymous upload: bump the trial counter and push the URL to
-    /// the recent list. Persists both.
-    pub fn record_upload(&self, url: &str) {
-        let uploads = self.uploads.fetch_add(1, Ordering::Relaxed) + 1;
+    /// Atomically reserve one anonymous-trial slot. Returns `true` if a slot was
+    /// available (counter incremented), `false` if the free limit is reached.
+    /// A compare-and-swap loop makes admission atomic across the watcher and
+    /// hotkey-capture threads, so two concurrent uploads can't both slip past
+    /// the last free slot.
+    pub fn try_reserve(&self) -> bool {
+        let mut current = self.uploads.load(Ordering::Relaxed);
+        loop {
+            if current >= FREE_UPLOAD_LIMIT {
+                return false;
+            }
+            match self.uploads.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Release a reserved slot (upload failed after `try_reserve`).
+    pub fn release(&self) {
+        loop {
+            let current = self.uploads.load(Ordering::Relaxed);
+            let next = current.saturating_sub(1);
+            if self
+                .uploads
+                .compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    /// Commit a reserved anonymous upload: push the URL to recent and persist.
+    /// (The counter was already incremented by `try_reserve`.)
+    pub fn commit_reserved(&self, url: &str) {
         let recent = self.push_recent_inner(url);
-        self.persist(uploads, recent);
+        self.persist(self.uploads(), recent);
     }
 
     /// Push a URL to the recent list WITHOUT touching the trial counter — used

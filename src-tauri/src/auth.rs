@@ -2,6 +2,10 @@
 //!
 //! Flow: `device_start(email)` emails a 6-digit code; `device_complete(email,
 //! code)` exchanges it for an app-scoped API key, stored in the OS keychain.
+//!
+//! Keychain access **fails closed**: a real access error propagates as `Err`
+//! rather than being flattened to "signed out", so a transient keychain failure
+//! can't silently downgrade a signed-in user to anonymous uploads.
 
 use std::time::Duration;
 
@@ -11,18 +15,49 @@ use crate::config::api_base;
 
 const KEYRING_SERVICE: &str = "dev.pixelvault.desktop";
 
+/// A signed-in session. Both fields are always present together.
+#[derive(Clone)]
+pub struct Session {
+    pub email: String,
+    pub api_key: String,
+}
+
 fn entry(user: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, user).map_err(|e| e.to_string())
 }
 
-/// The stored API key, if signed in.
-pub fn stored_key() -> Option<String> {
-    entry("api_key").ok().and_then(|e| e.get_password().ok())
+/// Read one keychain item, distinguishing "absent" (`Ok(None)`) from a real
+/// access error (`Err`).
+fn read(user: &str) -> Result<Option<String>, String> {
+    match entry(user)?.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
-/// The signed-in email, if any.
-pub fn stored_email() -> Option<String> {
-    entry("email").ok().and_then(|e| e.get_password().ok())
+/// Delete one keychain item. "Not found" counts as success.
+fn delete(user: &str) -> Result<(), String> {
+    match entry(user)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Load the persisted session. Requires BOTH the key and the email; a real
+/// access error propagates (fail closed). A half-written state (only one
+/// present) is cleared and treated as signed out.
+pub fn load_session() -> Result<Option<Session>, String> {
+    let api_key = read("api_key")?;
+    let email = read("email")?;
+    match (api_key, email) {
+        (Some(api_key), Some(email)) => Ok(Some(Session { email, api_key })),
+        (None, None) => Ok(None),
+        _ => {
+            let _ = sign_out();
+            Ok(None)
+        }
+    }
 }
 
 fn store(api_key: &str, email: &str) -> Result<(), String> {
@@ -35,14 +70,12 @@ fn store(api_key: &str, email: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Delete the stored session. Surfaces any real delete error so we never claim
+/// a sign-out that actually left the API key behind. Attempts both regardless.
 pub fn sign_out() -> Result<(), String> {
-    if let Ok(e) = entry("api_key") {
-        let _ = e.delete_credential();
-    }
-    if let Ok(e) = entry("email") {
-        let _ = e.delete_credential();
-    }
-    Ok(())
+    let a = delete("api_key");
+    let b = delete("email");
+    a.and(b)
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
@@ -93,8 +126,9 @@ struct CompleteData {
     email: String,
 }
 
-/// Exchange `code` for an API key and store it. Returns the signed-in email.
-pub fn device_complete(email: &str, code: &str) -> Result<String, String> {
+/// Exchange `code` for an API key, store it in the keychain, and return the
+/// resulting session so the caller can cache it in memory.
+pub fn device_complete(email: &str, code: &str) -> Result<Session, String> {
     let resp = client()?
         .post(format!("{}/v1/auth/device/complete", api_base()))
         .json(&serde_json::json!({ "email": email, "code": code }))
@@ -107,5 +141,8 @@ pub fn device_complete(email: &str, code: &str) -> Result<String, String> {
     }
     let env: CompleteEnvelope = resp.json().map_err(|e| format!("bad response: {e}"))?;
     store(&env.data.api_key, &env.data.email)?;
-    Ok(env.data.email)
+    Ok(Session {
+        email: env.data.email,
+        api_key: env.data.api_key,
+    })
 }
