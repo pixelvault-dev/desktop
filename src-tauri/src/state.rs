@@ -1,4 +1,4 @@
-//! Trial upload counter, persisted to the app config dir.
+//! Persisted app state: the trial upload counter + the last few upload URLs.
 //!
 //! In v0 there is no sign-in yet, so crossing the free limit only *nudges*
 //! (see `watcher`) — the real gate arrives with device login (slice 3).
@@ -6,34 +6,42 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
 /// Number of anonymous uploads before we prompt the user to sign in.
 pub const FREE_UPLOAD_LIMIT: u32 = 5;
 
+/// How many recent upload URLs to remember (and show in the tray).
+pub const RECENT_LIMIT: usize = 5;
+
 #[derive(Serialize, Deserialize, Default)]
 struct Persisted {
     uploads: u32,
+    #[serde(default)]
+    recent: Vec<String>,
 }
 
 pub struct TrialState {
     path: PathBuf,
     uploads: AtomicU32,
+    /// Most-recent-first, capped at `RECENT_LIMIT`.
+    recent: Mutex<Vec<String>>,
 }
 
 impl TrialState {
-    /// Load the counter from `<config_dir>/state.json`, defaulting to 0.
+    /// Load from `<config_dir>/state.json`, defaulting to empty.
     pub fn load(config_dir: PathBuf) -> Self {
         let path = config_dir.join("state.json");
-        let uploads = fs::read_to_string(&path)
+        let persisted = fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Persisted>(&s).ok())
-            .map(|p| p.uploads)
-            .unwrap_or(0);
+            .unwrap_or_default();
         Self {
             path,
-            uploads: AtomicU32::new(uploads),
+            uploads: AtomicU32::new(persisted.uploads),
+            recent: Mutex::new(persisted.recent),
         }
     }
 
@@ -45,18 +53,29 @@ impl TrialState {
         FREE_UPLOAD_LIMIT.saturating_sub(self.uploads())
     }
 
-    /// Increment and persist. Returns the new total.
-    pub fn record_upload(&self) -> u32 {
-        let n = self.uploads.fetch_add(1, Ordering::Relaxed) + 1;
-        self.persist(n);
-        n
+    pub fn recent(&self) -> Vec<String> {
+        self.recent.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
-    fn persist(&self, uploads: u32) {
+    /// Record a successful upload: bump the counter and push the URL to the
+    /// front of the recent list. Persists both.
+    pub fn record_upload(&self, url: &str) {
+        let uploads = self.uploads.fetch_add(1, Ordering::Relaxed) + 1;
+        let recent = {
+            let mut r = self.recent.lock().unwrap();
+            r.retain(|u| u != url); // de-dupe if the same URL recurs
+            r.insert(0, url.to_string());
+            r.truncate(RECENT_LIMIT);
+            r.clone()
+        };
+        self.persist(uploads, recent);
+    }
+
+    fn persist(&self, uploads: u32, recent: Vec<String>) {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if let Ok(json) = serde_json::to_string(&Persisted { uploads }) {
+        if let Ok(json) = serde_json::to_string(&Persisted { uploads, recent }) {
             let _ = fs::write(&self.path, json);
         }
     }

@@ -29,6 +29,8 @@ pub struct AppState {
     pub counter_item: Mutex<Option<MenuItem<Wry>>>,
     /// The tray "Pause/Resume watching" item.
     pub toggle_item: Mutex<Option<MenuItem<Wry>>>,
+    /// The tray "Recent uploads" slots (fixed count), updated after each upload.
+    pub recent_items: Mutex<Vec<MenuItem<Wry>>>,
     /// The tray icon, so we can flash a busy title while uploading.
     pub tray_icon: Mutex<Option<TrayIcon<Wry>>>,
     /// Whether the passive clipboard watcher is active.
@@ -69,8 +71,9 @@ fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
 
     let url = upload::upload_png(png_bytes)?;
 
-    app.state::<AppState>().trial.record_upload();
+    app.state::<AppState>().trial.record_upload(&url);
     refresh_counter(app);
+    refresh_recent(app);
 
     let remaining = app.state::<AppState>().trial.remaining();
     notify(
@@ -111,6 +114,39 @@ pub fn refresh_counter(app: &AppHandle) {
     }
 }
 
+/// Refresh the tray "Recent uploads" slots from persisted state. Filled slots
+/// show the image filename and are clickable (copy the URL); empty slots show
+/// "—" and are disabled.
+pub fn refresh_recent(app: &AppHandle) {
+    let recent = app.state::<AppState>().trial.recent();
+    let items = app
+        .state::<AppState>()
+        .recent_items
+        .lock()
+        .ok()
+        .map(|g| g.clone());
+    let Some(items) = items else { return };
+
+    let updates: Vec<(String, bool)> = (0..items.len())
+        .map(|i| match recent.get(i) {
+            Some(url) => (short_label(url), true),
+            None => ("—".to_string(), false),
+        })
+        .collect();
+
+    let _ = app.run_on_main_thread(move || {
+        for (item, (text, enabled)) in items.iter().zip(updates) {
+            let _ = item.set_text(text);
+            let _ = item.set_enabled(enabled);
+        }
+    });
+}
+
+/// Label a URL by its final path segment, e.g. `anon_l4f8nipug8ic.png`.
+fn short_label(url: &str) -> String {
+    url.rsplit('/').next().unwrap_or(url).to_string()
+}
+
 /// Toggle the passive watcher on/off and update the tray label.
 pub fn toggle_watching(app: &AppHandle) {
     let st = app.state::<AppState>();
@@ -145,6 +181,7 @@ pub fn run() {
                 trial: state::TrialState::load(config_dir),
                 counter_item: Mutex::new(None),
                 toggle_item: Mutex::new(None),
+                recent_items: Mutex::new(Vec::new()),
                 tray_icon: Mutex::new(None),
                 watching: AtomicBool::new(true),
             });

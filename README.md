@@ -51,3 +51,7 @@ PIXELVAULT_API_BASE=https://api-staging.pixelvault.dev npm run tauri dev
 Tauri v2 (Rust core + system webview). Clipboard I/O via `arboard`, PNG encoding
 via `image`, uploads via blocking `reqwest`. The UI is the tray menu; the small
 window is a status/settings surface.
+
+## License
+
+MIT © PixelVault. See [LICENSE](./LICENSE).

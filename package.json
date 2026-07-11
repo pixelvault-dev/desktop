@@ -2,6 +2,14 @@
   "name": "pixelvault-desktop",
   "private": true,
   "version": "0.1.0",
+  "description": "Copy an image, paste a hosted URL — a macOS/Linux menubar app for feeding images to cloud coding agents. By PixelVault.",
+  "license": "MIT",
+  "author": "PixelVault",
+  "homepage": "https://pixelvault.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pixelvault-dev/desktop.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
