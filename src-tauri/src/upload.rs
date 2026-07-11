@@ -11,6 +11,23 @@ use serde::Deserialize;
 
 use crate::config::api_base;
 
+/// Upload failure. `Unauthorized` (401/403) is separated so the caller can clear
+/// a revoked/expired key and prompt re-sign-in. Messages are user-safe (never
+/// the raw response body).
+pub enum UploadError {
+    Unauthorized,
+    Failed(String),
+}
+
+impl UploadError {
+    pub fn message(&self) -> String {
+        match self {
+            UploadError::Unauthorized => "Your session has expired.".to_string(),
+            UploadError::Failed(m) => m.clone(),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct UploadEnvelope {
     data: UploadData,
@@ -41,16 +58,16 @@ pub fn upload_png(
     png: Vec<u8>,
     api_key: Option<&str>,
     expires_in: Option<u64>,
-) -> Result<String, String> {
+) -> Result<String, UploadError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| UploadError::Failed(e.to_string()))?;
 
     let part = reqwest::blocking::multipart::Part::bytes(png)
         .file_name("clipboard.png")
         .mime_str("image/png")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| UploadError::Failed(e.to_string()))?;
     let mut form = reqwest::blocking::multipart::Form::new().part("file", part);
     if api_key.is_some() {
         if let Some(secs) = expires_in {
@@ -63,13 +80,23 @@ pub fn upload_png(
         req = req.bearer_auth(key);
     }
 
-    let resp = req.send().map_err(|e| e.to_string())?;
+    let resp = req.send().map_err(|e| UploadError::Failed(e.to_string()))?;
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().unwrap_or_default();
-        return Err(format!("upload failed ({status}): {body}"));
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(UploadError::Unauthorized);
+        }
+        // Friendly, body-free messages for the common cases.
+        let msg = match status.as_u16() {
+            413 => "Image is too large.".to_string(),
+            429 => "Rate limit reached — try again shortly.".to_string(),
+            s => format!("Upload failed ({s})."),
+        };
+        return Err(UploadError::Failed(msg));
     }
 
-    let env: UploadEnvelope = resp.json().map_err(|e| format!("bad response: {e}"))?;
+    let env: UploadEnvelope = resp
+        .json()
+        .map_err(|e| UploadError::Failed(format!("bad response: {e}")))?;
     Ok(env.data.url)
 }

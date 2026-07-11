@@ -1,6 +1,7 @@
 // The menubar tray (built in Rust) is the primary UI. This window is a
 // status/settings surface — its main job is the sign-in flow.
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface AuthStatus {
   signed_in: boolean;
@@ -116,4 +117,13 @@ function renderSignedIn(email: string): void {
 
 window.addEventListener("DOMContentLoaded", () => {
   refresh().catch((e) => console.error(e));
+
+  // The window is hidden/shown from the tray (and the hard gate), not reloaded,
+  // so DOMContentLoaded fires only once. Re-render whenever it regains focus so
+  // the counter + auth state are never stale.
+  getCurrentWindow()
+    .onFocusChanged(({ payload: focused }) => {
+      if (focused) refresh().catch((e) => console.error(e));
+    })
+    .catch((e) => console.error(e));
 });

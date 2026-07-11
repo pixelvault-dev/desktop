@@ -29,6 +29,11 @@ pub fn spawn(app: AppHandle) {
         // content on every poll. (A deliberate re-copy of the *same* image
         // within a session won't re-upload — acceptable for v0.)
         let mut last_hash: Option<u64> = None;
+        // Hash of an image that was gated (free trial used up). We keep it in the
+        // clipboard and skip re-prompting for it while signed out — but once the
+        // user signs in, we let it through so the exact image that triggered the
+        // sign-in gets uploaded without needing a re-copy.
+        let mut gated_hash: Option<u64> = None;
 
         loop {
             std::thread::sleep(POLL_INTERVAL);
@@ -47,7 +52,11 @@ pub fn spawn(app: AppHandle) {
             if Some(hash) == last_hash {
                 continue;
             }
-            last_hash = Some(hash);
+            // Previously gated this exact image and still signed out → don't
+            // re-prompt every poll. (Once signed in, fall through and upload it.)
+            if Some(hash) == gated_hash && !crate::is_signed_in(&app) {
+                continue;
+            }
 
             let width = img.width as u32;
             let height = img.height as u32;
@@ -57,18 +66,28 @@ pub fn spawn(app: AppHandle) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("[pixelvault] encode error: {e}");
+                    last_hash = Some(hash);
                     continue;
                 }
             };
 
             match crate::upload_and_notify(&app, png) {
-                Ok(url) => {
+                Ok(Some(url)) => {
+                    last_hash = Some(hash);
+                    gated_hash = None;
                     // Swap the URL onto the clipboard (replaces the image).
                     if let Err(e) = clipboard.set_text(url) {
                         eprintln!("[pixelvault] failed to set clipboard text: {e}");
                     }
                 }
+                // Gated (free trial used up) — sign-in was prompted. Remember the
+                // hash (don't advance last_hash) so a subsequent sign-in retries
+                // this exact image.
+                Ok(None) => {
+                    gated_hash = Some(hash);
+                }
                 Err(e) => {
+                    last_hash = Some(hash);
                     eprintln!("[pixelvault] upload error: {e}");
                     crate::notify(&app, "Upload failed", &e);
                 }

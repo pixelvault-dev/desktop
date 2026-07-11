@@ -38,8 +38,45 @@ pub struct AppState {
     pub account_item: Mutex<Option<MenuItem<Wry>>>,
     /// The tray icon, so we can flash a busy title while uploading.
     pub tray_icon: Mutex<Option<TrayIcon<Wry>>>,
+    /// Cached signed-in session. Loaded once from the keychain at startup and
+    /// updated on sign-in/out, so uploads never hit the keychain (which could
+    /// transiently fail and silently downgrade a signed-in user to anonymous).
+    pub session: Mutex<Option<auth::Session>>,
     /// Whether the passive clipboard watcher is active.
     pub watching: AtomicBool,
+}
+
+/// The cached signed-in API key, if any.
+fn current_key(app: &AppHandle) -> Option<String> {
+    app.state::<AppState>()
+        .session
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.api_key.clone()))
+}
+
+/// Whether a session is currently cached.
+pub fn is_signed_in(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .session
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
+}
+
+/// Clear the session (revoked/expired key) and prompt re-sign-in.
+fn handle_unauthorized(app: &AppHandle) {
+    let _ = auth::sign_out();
+    if let Ok(mut g) = app.state::<AppState>().session.lock() {
+        *g = None;
+    }
+    refresh_account(app);
+    notify(
+        app,
+        "Session expired",
+        "Please sign in again (Account & Settings).",
+    );
+    open_settings(app);
 }
 
 /// Show a native notification. Safe to call from any thread.
@@ -57,47 +94,78 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) {
 const EPHEMERAL_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// Shared Mode A/B pipeline: upload PNG bytes → record + refresh tray → notify.
-/// Returns the hosted URL. Does NOT touch the clipboard — the caller places it.
-pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
+/// Returns `Some(url)` on upload (caller places it on the clipboard), or `None`
+/// when the free trial is exhausted and the upload was gated (sign-in prompted).
+pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, String> {
     set_busy(app, true);
     let result = run_upload(app, png_bytes);
     set_busy(app, false);
     result
 }
 
-fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
-    match auth::stored_key() {
+fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, String> {
+    match current_key(app) {
         // Signed in → keyed, ephemeral (30d) upload; not part of the free trial.
-        Some(key) => {
-            let url = upload::upload_png(png_bytes, Some(&key), Some(EPHEMERAL_SECS))?;
-            app.state::<AppState>().trial.push_recent(&url);
-            refresh_recent(app);
-            notify(app, "Image URL copied", &url);
-            Ok(url)
-        }
-        // Signed out → anonymous trial upload. Crossing the free limit only
-        // nudges (the real ceiling is the server-side anonymous rate limiter).
+        Some(key) => match upload::upload_png(png_bytes, Some(&key), Some(EPHEMERAL_SECS)) {
+            Ok(url) => {
+                app.state::<AppState>().trial.push_recent(&url);
+                refresh_recent(app);
+                notify(app, "Image URL copied", &url);
+                Ok(Some(url))
+            }
+            // Revoked/expired key — clear the session and prompt re-sign-in.
+            Err(upload::UploadError::Unauthorized) => {
+                handle_unauthorized(app);
+                Ok(None)
+            }
+            Err(e) => Err(e.message()),
+        },
+        // Signed out → anonymous trial. Reserve a slot atomically; if the free
+        // limit is reached, HARD-gate: stop and prompt sign-in (a trial that
+        // never blocks converts no one). Bypassable by design (client-side).
         None => {
-            if app.state::<AppState>().trial.remaining() == 0 {
+            if !app.state::<AppState>().trial.try_reserve() {
                 notify(
                     app,
-                    "Free uploads used up",
-                    "You've used your 5 free uploads. Sign in (Settings) to keep going — still uploading for now.",
+                    "Sign in to keep uploading",
+                    "You've used your 5 free uploads. Sign in (Account & Settings) for unlimited uploads + history.",
                 );
+                open_settings(app);
+                return Ok(None);
             }
-            let url = upload::upload_png(png_bytes, None, None)?;
-            app.state::<AppState>().trial.record_upload(&url);
-            refresh_counter(app);
-            refresh_recent(app);
-            let remaining = app.state::<AppState>().trial.remaining();
-            notify(
-                app,
-                "Image URL copied",
-                &format!("{url}\n{remaining} of {} free uploads left", state::FREE_UPLOAD_LIMIT),
-            );
-            Ok(url)
+            match upload::upload_png(png_bytes, None, None) {
+                Ok(url) => {
+                    app.state::<AppState>().trial.commit_reserved(&url);
+                    refresh_counter(app);
+                    refresh_recent(app);
+                    let remaining = app.state::<AppState>().trial.remaining();
+                    notify(
+                        app,
+                        "Image URL copied",
+                        &format!("{url}\n{remaining} of {} free uploads left", state::FREE_UPLOAD_LIMIT),
+                    );
+                    Ok(Some(url))
+                }
+                Err(e) => {
+                    // Upload failed — release the reserved slot so it isn't burned.
+                    app.state::<AppState>().trial.release();
+                    Err(e.message())
+                }
+            }
         }
     }
+}
+
+/// Show + focus the settings/account window. Window ops run on the main thread
+/// (this is called from the background watcher/capture threads on the gate path).
+fn open_settings(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    });
 }
 
 /// Flash the tray title while an upload is in flight (an always-visible "busy"
@@ -130,8 +198,14 @@ pub fn refresh_counter(app: &AppHandle) {
     }
 }
 
-/// Refresh the tray account status item from the keychain.
+/// Refresh the tray account status item from the cached session.
 pub fn refresh_account(app: &AppHandle) {
+    let email = app
+        .state::<AppState>()
+        .session
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.email.clone()));
     let item = app
         .state::<AppState>()
         .account_item
@@ -139,7 +213,7 @@ pub fn refresh_account(app: &AppHandle) {
         .ok()
         .and_then(|g| g.clone());
     if let Some(item) = item {
-        let text = match auth::stored_email() {
+        let text = match email {
             Some(email) => format!("Signed in as {email}"),
             None => "Not signed in".to_string(),
         };
@@ -205,9 +279,13 @@ fn sign_in_start(email: String) -> Result<(), String> {
 
 #[tauri::command]
 fn sign_in_complete(app: AppHandle, email: String, code: String) -> Result<String, String> {
-    let signed_in = auth::device_complete(email.trim(), code.trim())?;
+    let session = auth::device_complete(email.trim(), code.trim())?;
+    let email = session.email.clone();
+    if let Ok(mut g) = app.state::<AppState>().session.lock() {
+        *g = Some(session);
+    }
     refresh_account(&app);
-    Ok(signed_in)
+    Ok(email)
 }
 
 #[derive(serde::Serialize)]
@@ -219,7 +297,12 @@ struct AuthStatus {
 
 #[tauri::command]
 fn auth_status(app: AppHandle) -> AuthStatus {
-    let email = auth::stored_email();
+    let email = app
+        .state::<AppState>()
+        .session
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.email.clone()));
     AuthStatus {
         signed_in: email.is_some(),
         email,
@@ -230,6 +313,9 @@ fn auth_status(app: AppHandle) -> AuthStatus {
 #[tauri::command]
 fn sign_out(app: AppHandle) -> Result<(), String> {
     auth::sign_out()?;
+    if let Ok(mut g) = app.state::<AppState>().session.lock() {
+        *g = None;
+    }
     refresh_account(&app);
     Ok(())
 }
@@ -256,6 +342,14 @@ pub fn run() {
                 .app_config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
+            // Load the session once at startup. A keychain access error → treat
+            // as signed out (log it) rather than crashing; uploads then use the
+            // anonymous trial instead of a broken key.
+            let session = auth::load_session().unwrap_or_else(|e| {
+                eprintln!("[pixelvault] keychain read failed at startup: {e}");
+                None
+            });
+
             app.manage(AppState {
                 trial: state::TrialState::load(config_dir),
                 counter_item: Mutex::new(None),
@@ -263,6 +357,7 @@ pub fn run() {
                 recent_items: Mutex::new(Vec::new()),
                 account_item: Mutex::new(None),
                 tray_icon: Mutex::new(None),
+                session: Mutex::new(session),
                 watching: AtomicBool::new(true),
             });
 

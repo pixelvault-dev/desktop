@@ -50,11 +50,12 @@ pub fn trigger(app: AppHandle) {
         let _ = std::fs::remove_file(&path);
 
         match crate::upload_and_notify(&app, bytes) {
-            Ok(url) => {
+            Ok(Some(url)) => {
                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                     let _ = clipboard.set_text(url);
                 }
             }
+            Ok(None) => {} // gated (free trial used up) — sign-in was prompted
             Err(e) => crate::notify(&app, "Upload failed", &e),
         }
     });
