@@ -3,9 +3,12 @@
 //! - Mode A (passive): watch the clipboard → keyless upload → URL on clipboard.
 //! - Mode B (active): global hotkey → native `screencapture -i` → same pipeline.
 //!
-//! No sign-in yet (slice 3).
+//! - Sign-in (device login) unlocks keyed uploads; signed-out uses the anonymous
+//!   trial (5 free uploads).
 
+mod auth;
 mod capture;
+mod config;
 mod state;
 mod tray;
 mod upload;
@@ -31,6 +34,8 @@ pub struct AppState {
     pub toggle_item: Mutex<Option<MenuItem<Wry>>>,
     /// The tray "Recent uploads" slots (fixed count), updated after each upload.
     pub recent_items: Mutex<Vec<MenuItem<Wry>>>,
+    /// The tray account status item ("Signed in as …" / "Not signed in").
+    pub account_item: Mutex<Option<MenuItem<Wry>>>,
     /// The tray icon, so we can flash a busy title while uploading.
     pub tray_icon: Mutex<Option<TrayIcon<Wry>>>,
     /// Whether the passive clipboard watcher is active.
@@ -48,9 +53,11 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) {
         .show();
 }
 
-/// Shared Mode A/B pipeline: nudge if out of free uploads → upload PNG bytes →
-/// record + refresh the counter → notify. Returns the hosted URL. Does NOT touch
-/// the clipboard — the caller decides how to place the URL.
+/// Ephemeral TTL applied to signed-in (keyed) uploads: 30 days.
+const EPHEMERAL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Shared Mode A/B pipeline: upload PNG bytes → record + refresh tray → notify.
+/// Returns the hosted URL. Does NOT touch the clipboard — the caller places it.
 pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
     set_busy(app, true);
     let result = run_upload(app, png_bytes);
@@ -59,29 +66,38 @@ pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, 
 }
 
 fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
-    // v0 nudge: no sign-in yet to unblock the gate, so we only warn and keep
-    // uploading (the real ceiling is the server-side anonymous rate limiter).
-    if app.state::<AppState>().trial.remaining() == 0 {
-        notify(
-            app,
-            "Free uploads used up",
-            "You've used your 5 free uploads. Sign-in is coming soon — still uploading for now.",
-        );
+    match auth::stored_key() {
+        // Signed in → keyed, ephemeral (30d) upload; not part of the free trial.
+        Some(key) => {
+            let url = upload::upload_png(png_bytes, Some(&key), Some(EPHEMERAL_SECS))?;
+            app.state::<AppState>().trial.push_recent(&url);
+            refresh_recent(app);
+            notify(app, "Image URL copied", &url);
+            Ok(url)
+        }
+        // Signed out → anonymous trial upload. Crossing the free limit only
+        // nudges (the real ceiling is the server-side anonymous rate limiter).
+        None => {
+            if app.state::<AppState>().trial.remaining() == 0 {
+                notify(
+                    app,
+                    "Free uploads used up",
+                    "You've used your 5 free uploads. Sign in (Settings) to keep going — still uploading for now.",
+                );
+            }
+            let url = upload::upload_png(png_bytes, None, None)?;
+            app.state::<AppState>().trial.record_upload(&url);
+            refresh_counter(app);
+            refresh_recent(app);
+            let remaining = app.state::<AppState>().trial.remaining();
+            notify(
+                app,
+                "Image URL copied",
+                &format!("{url}\n{remaining} of {} free uploads left", state::FREE_UPLOAD_LIMIT),
+            );
+            Ok(url)
+        }
     }
-
-    let url = upload::upload_png(png_bytes)?;
-
-    app.state::<AppState>().trial.record_upload(&url);
-    refresh_counter(app);
-    refresh_recent(app);
-
-    let remaining = app.state::<AppState>().trial.remaining();
-    notify(
-        app,
-        "Image URL copied",
-        &format!("{url}\n{remaining} of {} free uploads left", state::FREE_UPLOAD_LIMIT),
-    );
-    Ok(url)
 }
 
 /// Flash the tray title while an upload is in flight (an always-visible "busy"
@@ -108,6 +124,25 @@ pub fn refresh_counter(app: &AppHandle) {
     let item = st.counter_item.lock().ok().and_then(|g| g.clone());
     if let Some(item) = item {
         let text = format!("Free uploads left: {}/{}", remaining, state::FREE_UPLOAD_LIMIT);
+        let _ = app.run_on_main_thread(move || {
+            let _ = item.set_text(text);
+        });
+    }
+}
+
+/// Refresh the tray account status item from the keychain.
+pub fn refresh_account(app: &AppHandle) {
+    let item = app
+        .state::<AppState>()
+        .account_item
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    if let Some(item) = item {
+        let text = match auth::stored_email() {
+            Some(email) => format!("Signed in as {email}"),
+            None => "Not signed in".to_string(),
+        };
         let _ = app.run_on_main_thread(move || {
             let _ = item.set_text(text);
         });
@@ -161,12 +196,56 @@ pub fn toggle_watching(app: &AppHandle) {
     }
 }
 
+// ---- Tauri commands (invoked from the settings window) ----
+
+#[tauri::command]
+fn sign_in_start(email: String) -> Result<(), String> {
+    auth::device_start(email.trim())
+}
+
+#[tauri::command]
+fn sign_in_complete(app: AppHandle, email: String, code: String) -> Result<String, String> {
+    let signed_in = auth::device_complete(email.trim(), code.trim())?;
+    refresh_account(&app);
+    Ok(signed_in)
+}
+
+#[derive(serde::Serialize)]
+struct AuthStatus {
+    signed_in: bool,
+    email: Option<String>,
+    remaining: u32,
+}
+
+#[tauri::command]
+fn auth_status(app: AppHandle) -> AuthStatus {
+    let email = auth::stored_email();
+    AuthStatus {
+        signed_in: email.is_some(),
+        email,
+        remaining: app.state::<AppState>().trial.remaining(),
+    }
+}
+
+#[tauri::command]
+fn sign_out(app: AppHandle) -> Result<(), String> {
+    auth::sign_out()?;
+    refresh_account(&app);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            sign_in_start,
+            sign_in_complete,
+            auth_status,
+            sign_out
+        ])
         .setup(|app| {
             // Menubar-first: no dock icon on macOS.
             #[cfg(target_os = "macos")]
@@ -182,11 +261,13 @@ pub fn run() {
                 counter_item: Mutex::new(None),
                 toggle_item: Mutex::new(None),
                 recent_items: Mutex::new(Vec::new()),
+                account_item: Mutex::new(None),
                 tray_icon: Mutex::new(None),
                 watching: AtomicBool::new(true),
             });
 
             tray::build(app.handle())?;
+            refresh_account(app.handle());
             watcher::spawn(app.handle().clone());
 
             // Mode B: register the global capture hotkey.

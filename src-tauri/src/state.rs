@@ -57,18 +57,27 @@ impl TrialState {
         self.recent.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
-    /// Record a successful upload: bump the counter and push the URL to the
-    /// front of the recent list. Persists both.
+    /// Record an anonymous upload: bump the trial counter and push the URL to
+    /// the recent list. Persists both.
     pub fn record_upload(&self, url: &str) {
         let uploads = self.uploads.fetch_add(1, Ordering::Relaxed) + 1;
-        let recent = {
-            let mut r = self.recent.lock().unwrap();
-            r.retain(|u| u != url); // de-dupe if the same URL recurs
-            r.insert(0, url.to_string());
-            r.truncate(RECENT_LIMIT);
-            r.clone()
-        };
+        let recent = self.push_recent_inner(url);
         self.persist(uploads, recent);
+    }
+
+    /// Push a URL to the recent list WITHOUT touching the trial counter — used
+    /// for keyed (signed-in) uploads, which aren't part of the free trial.
+    pub fn push_recent(&self, url: &str) {
+        let recent = self.push_recent_inner(url);
+        self.persist(self.uploads(), recent);
+    }
+
+    fn push_recent_inner(&self, url: &str) -> Vec<String> {
+        let mut r = self.recent.lock().unwrap();
+        r.retain(|u| u != url); // de-dupe if the same URL recurs
+        r.insert(0, url.to_string());
+        r.truncate(RECENT_LIMIT);
+        r.clone()
     }
 
     fn persist(&self, uploads: u32, recent: Vec<String>) {

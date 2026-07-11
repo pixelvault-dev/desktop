@@ -37,3 +37,10 @@ reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
+# OS-native secret storage for the signed-in API key (macOS Keychain / Linux
+# secret-service via pure-Rust zbus, so no libsecret system dep for CI).
+keyring = { version = "3", default-features = false, features = [
+  "apple-native",
+  "sync-secret-service",
+  "crypto-rust",
+] }
