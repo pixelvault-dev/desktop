@@ -57,15 +57,16 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) {
 const EPHEMERAL_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// Shared Mode A/B pipeline: upload PNG bytes → record + refresh tray → notify.
-/// Returns the hosted URL. Does NOT touch the clipboard — the caller places it.
-pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
+/// Returns `Some(url)` on upload (caller places it on the clipboard), or `None`
+/// when the free trial is exhausted and the upload was gated (sign-in prompted).
+pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, String> {
     set_busy(app, true);
     let result = run_upload(app, png_bytes);
     set_busy(app, false);
     result
 }
 
-fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
+fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, String> {
     match auth::stored_key() {
         // Signed in → keyed, ephemeral (30d) upload; not part of the free trial.
         Some(key) => {
@@ -73,17 +74,20 @@ fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
             app.state::<AppState>().trial.push_recent(&url);
             refresh_recent(app);
             notify(app, "Image URL copied", &url);
-            Ok(url)
+            Ok(Some(url))
         }
-        // Signed out → anonymous trial upload. Crossing the free limit only
-        // nudges (the real ceiling is the server-side anonymous rate limiter).
+        // Signed out → anonymous trial. Once the free limit is hit, HARD-gate:
+        // stop uploading and prompt sign-in (a trial that never blocks converts
+        // no one). Bypassable by design (client-side), but it presents the wall.
         None => {
             if app.state::<AppState>().trial.remaining() == 0 {
                 notify(
                     app,
-                    "Free uploads used up",
-                    "You've used your 5 free uploads. Sign in (Settings) to keep going — still uploading for now.",
+                    "Sign in to keep uploading",
+                    "You've used your 5 free uploads. Sign in (Account & Settings) for unlimited uploads + history.",
                 );
+                open_settings(app);
+                return Ok(None);
             }
             let url = upload::upload_png(png_bytes, None, None)?;
             app.state::<AppState>().trial.record_upload(&url);
@@ -95,8 +99,16 @@ fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<String, String> {
                 "Image URL copied",
                 &format!("{url}\n{remaining} of {} free uploads left", state::FREE_UPLOAD_LIMIT),
             );
-            Ok(url)
+            Ok(Some(url))
         }
+    }
+}
+
+/// Show + focus the settings/account window.
+fn open_settings(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
     }
 }
 

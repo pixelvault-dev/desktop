@@ -62,12 +62,15 @@ pub fn spawn(app: AppHandle) {
             };
 
             match crate::upload_and_notify(&app, png) {
-                Ok(url) => {
+                Ok(Some(url)) => {
                     // Swap the URL onto the clipboard (replaces the image).
                     if let Err(e) = clipboard.set_text(url) {
                         eprintln!("[pixelvault] failed to set clipboard text: {e}");
                     }
                 }
+                // Gated (free trial used up) — sign-in was prompted; leave the
+                // clipboard image in place so the user can retry after signing in.
+                Ok(None) => {}
                 Err(e) => {
                     eprintln!("[pixelvault] upload error: {e}");
                     crate::notify(&app, "Upload failed", &e);
