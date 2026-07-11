@@ -32,7 +32,7 @@ body {
 .wrap {
   margin: 0 auto;
   max-width: 380px;
-  padding: 28px 24px;
+  padding: 20px 24px;
   text-align: center;
 }
 
@@ -43,13 +43,13 @@ h1 {
 }
 
 .tag {
-  margin: 0 0 20px;
+  margin: 0 0 16px;
   font-weight: 600;
   color: var(--accent);
 }
 
 .status {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   text-align: left;
   color: var(--text-secondary);
 }
@@ -58,7 +58,7 @@ h1 {
 }
 
 .modes {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   padding-left: 20px;
   text-align: left;
   color: var(--text-secondary);
@@ -88,14 +88,14 @@ kbd {
 }
 
 .foss {
-  margin: 24px 0 0;
+  margin: 16px 0 0;
   font-size: 12px;
   color: var(--text-muted);
 }
 
 /* Account / sign-in card */
 .account {
-  margin: 0 0 20px;
+  margin: 0 0 16px;
   padding: 16px;
   background: var(--bg-card);
   border: 1px solid var(--border);
