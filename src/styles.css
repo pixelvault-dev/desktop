@@ -1,41 +1,68 @@
+/* PixelVault brand palette (mirrors apps/web design tokens). Dark, gold accent. */
 :root {
+  --bg-deep: #08090c;
+  --bg-surface: #0f1117;
+  --bg-elevated: #161820;
+  --bg-card: #1a1c26;
+  --border: #252730;
+  --border-hover: #3a3d4a;
+  --text-primary: #e8e9ed;
+  --text-secondary: #8e919e;
+  --text-muted: #5c5f6e;
+  --accent: #e4a44c;
+  --accent-hover: #f0b866;
+  --btn-primary-text: #0a0a0a;
+  --red: #f87171;
+
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 15px;
   line-height: 1.5;
-  color: #111;
-  background-color: #f6f6f6;
+  color: var(--text-primary);
+  background-color: var(--bg-deep);
   -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  background-color: var(--bg-deep);
 }
 
 .wrap {
   margin: 0 auto;
-  max-width: 360px;
-  padding: 32px 24px;
+  max-width: 380px;
+  padding: 28px 24px;
   text-align: center;
 }
 
 h1 {
   margin: 0 0 4px;
   font-size: 22px;
+  color: var(--text-primary);
 }
 
 .tag {
   margin: 0 0 20px;
   font-weight: 600;
-  color: #396cd8;
+  color: var(--accent);
 }
 
 .status {
   margin: 0 0 16px;
   text-align: left;
+  color: var(--text-secondary);
+}
+.status strong {
+  color: var(--text-primary);
 }
 
 .modes {
   margin: 0 0 16px;
   padding-left: 20px;
   text-align: left;
+  color: var(--text-secondary);
 }
-
 .modes li {
   margin-bottom: 6px;
 }
@@ -43,52 +70,47 @@ h1 {
 kbd {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.85em;
-  background: #fff;
-  border: 1px solid #d0d0d0;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 1px 6px;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
-}
-
-.muted {
-  margin: 0 0 20px;
-  font-size: 13px;
-  color: #666;
-  text-align: left;
 }
 
 .link {
   font-weight: 500;
-  color: #396cd8;
+  color: var(--accent);
   text-decoration: none;
 }
 .link:hover {
+  color: var(--accent-hover);
   text-decoration: underline;
 }
 
 .foss {
   margin: 24px 0 0;
   font-size: 12px;
-  color: #888;
+  color: var(--text-muted);
 }
 
 /* Account / sign-in card */
 .account {
   margin: 0 0 20px;
   padding: 16px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
   text-align: left;
 }
 .acct-title {
   margin: 0 0 4px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 .acct-sub {
   margin: 0 0 12px;
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 .acct-row {
   display: flex;
@@ -98,67 +120,53 @@ kbd {
 .acct-row input {
   flex: 1;
   min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid #d0d0d0;
+  padding: 9px 11px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   font: inherit;
+}
+.acct-row input::placeholder {
+  color: var(--text-muted);
+}
+.acct-row input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 .acct-row button,
 button.secondary {
-  padding: 8px 14px;
+  padding: 9px 15px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: #396cd8;
-  color: #fff;
+  background: var(--accent);
+  color: var(--btn-primary-text);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+  transition: background 0.15s;
+}
+.acct-row button:hover {
+  background: var(--accent-hover);
 }
 .acct-row button:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: default;
 }
 button.secondary {
-  background: #eee;
-  color: #333;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+button.secondary:hover {
+  border-color: var(--border-hover);
 }
 .acct-msg {
   margin: 8px 0 0;
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   min-height: 1em;
 }
 .acct-msg.error {
-  color: #c0392b;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-  kbd {
-    background: #1c1c1c;
-    border-color: #444;
-  }
-  .muted {
-    color: #aaa;
-  }
-  .account {
-    background: #1c1c1c;
-    border-color: #444;
-  }
-  .acct-sub,
-  .acct-msg {
-    color: #aaa;
-  }
-  .acct-row input {
-    background: #111;
-    border-color: #444;
-    color: #f6f6f6;
-  }
-  button.secondary {
-    background: #333;
-    color: #eee;
-  }
+  color: var(--red);
 }
