@@ -32,8 +32,19 @@ body {
 .wrap {
   margin: 0 auto;
   max-width: 380px;
-  padding: 20px 24px;
+  padding: 18px 24px;
   text-align: center;
+}
+
+.logo {
+  margin: 0 auto 8px;
+  width: 52px;
+  height: 52px;
+}
+.logo svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 h1 {
