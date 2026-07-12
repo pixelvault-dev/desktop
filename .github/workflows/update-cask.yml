@@ -1,0 +1,54 @@
+name: update-homebrew-cask
+
+# When a GitHub Release is published, bump the version + sha256 in the
+# pixelvault-dev/homebrew-tap cask so `brew install --cask pixelvault-dev/tap/pixelvault`
+# stays current automatically.
+#
+# DISABLED until you enable it (no failures while off — the job is skipped):
+#   1. Actions → Variables:  HOMEBREW_AUTO_BUMP = true
+#   2. Actions → Secrets:    HOMEBREW_TAP_TOKEN = a PAT (fine-grained or classic)
+#      with contents:write on pixelvault-dev/homebrew-tap (the default GITHUB_TOKEN
+#      can't push to another repo, hence a PAT).
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-cask:
+    # Only run when explicitly enabled and for real (non-prerelease) releases.
+    if: ${{ vars.HOMEBREW_AUTO_BUMP == 'true' && github.event.release.prerelease == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute version + sha256 from the released .dmg
+        id: calc
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/PixelVault_${VERSION}_universal.dmg"
+          echo "Fetching $URL"
+          curl -fsSL -o pv.dmg "$URL"
+          SHA="$(sha256sum pv.dmg | cut -d' ' -f1)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the tap
+        uses: actions/checkout@v4
+        with:
+          repository: pixelvault-dev/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update + push the cask
+        run: |
+          CASK="Casks/pixelvault.rb"
+          sed -i -E "s/^  version \"[^\"]+\"/  version \"${{ steps.calc.outputs.version }}\"/" "$CASK"
+          sed -i -E "s/^  sha256 \"[^\"]+\"/  sha256 \"${{ steps.calc.outputs.sha }}\"/" "$CASK"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Cask already up to date — nothing to commit."
+          else
+            git add "$CASK"
+            git commit -m "Update pixelvault cask to ${{ steps.calc.outputs.version }}"
+            git push
+          fi
