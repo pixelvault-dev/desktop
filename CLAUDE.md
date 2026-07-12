@@ -50,25 +50,32 @@ PIXELVAULT_API_BASE=https://api-staging.pixelvault.dev npm run tauri dev
 ## Architecture (`src-tauri/src/`)
 
 - `lib.rs` — Tauri builder + `setup`: Accessory activation policy (no Dock icon),
-  managed `AppState`, builds the tray, spawns the watcher, registers the Mode B
-  hotkey. Also the **shared `upload_and_notify()` pipeline** used by both modes,
-  plus `refresh_counter` / `refresh_recent` / `set_busy` (tray updates).
+  loads the cached session, manages `AppState`, builds the tray, spawns the
+  watcher, registers the Mode B hotkey + the sign-in commands (`sign_in_start` /
+  `sign_in_complete` / `auth_status` / `sign_out`). Also the **shared `run_upload`
+  pipeline** (`upload_and_notify`): it branches on the cached session — signed-in
+  → keyed ephemeral upload; signed-out → anonymous trial with an atomic
+  reservation + hard gate. Plus `refresh_counter` / `refresh_recent` /
+  `refresh_account` / `set_busy` (tray updates, all on the main thread).
 - `watcher.rs` — **Mode A (passive):** background thread polls the clipboard
-  (`arboard`) every 1.2s, hashes the image to dedupe, and on a new image runs the
-  shared pipeline, then writes the URL back to the clipboard.
+  (`arboard`) every 1.2s, hashes to dedupe, runs the shared pipeline, writes the
+  URL back. Tracks a separate `gated_hash` so a gated image is retried once the
+  user signs in, without re-prompting every poll while signed out.
 - `capture.rs` — **Mode B (active):** global hotkey **⇧⌘2** → spawns a thread that
-  runs macOS's native `/usr/sbin/screencapture -i <tempfile>`, uploads the PNG,
-  and writes the URL to the clipboard.
-- `auth.rs` — sign-in via `/v1/auth/device/{start,complete}`; stores the API key
-  in the OS keychain (`keyring`). `config.rs` holds the shared API base.
-- `upload.rs` — RGBA→PNG encode + multipart `POST /v1/images` (keyed with a
-  Bearer key + `expires_in` when signed in, else anonymous); parses the
-  `{ "data": { "url": ... } }` envelope. Base URL from `PIXELVAULT_API_BASE`.
-- `state.rs` — `TrialState`: the free-upload counter (limit 5) + last 5 upload
-  URLs, persisted to `<app_config_dir>/state.json`.
-- `tray.rs` — the menu-bar icon (transparent template glyph) and menu (status,
-  free-uploads counter, "Recent uploads" click-to-copy list, pause/resume,
-  settings, quit).
+  runs macOS's native `/usr/sbin/screencapture -i <tempfile>`, uploads, writes URL.
+- `auth.rs` — sign-in via `/v1/auth/device/{start,complete}`. A `Session {email,
+  api_key}` is stored in the OS keychain (`keyring`); `load_session()` **fails
+  closed** (a real keychain error propagates rather than flattening to "signed
+  out"). `config.rs` holds the shared API base.
+- `upload.rs` — RGBA→PNG encode + multipart `POST /v1/images` (keyed = Bearer +
+  `expires_in`; else anonymous). Returns `UploadError::Unauthorized` on 401/403 so
+  the caller clears the session + re-prompts. Base from `PIXELVAULT_API_BASE`.
+- `state.rs` — `TrialState`: free-upload counter (limit 5) + last 5 URLs in
+  `<app_config_dir>/state.json`. Anonymous admission is atomic: `try_reserve`
+  (compare-exchange) → `commit_reserved` / `release`.
+- `tray.rs` — menu-bar icon (transparent template glyph) + menu: status, account
+  ("Signed in as …" / "Not signed in"), free-uploads counter, "Recent uploads"
+  click-to-copy, pause/resume, Account & Settings…, quit.
 
 ## Key rules & gotchas
 
@@ -80,16 +87,42 @@ PIXELVAULT_API_BASE=https://api-staging.pixelvault.dev npm run tauri dev
   (AppKit requirement on macOS). The watcher/capture run on background threads.
 - **`Image::from_bytes` needs the `image-png` Cargo feature** on `tauri` (already
   enabled) — that's how the tray icon is decoded from `include_bytes!`.
-- **The keyless upload path needs no auth.** With no API key, uploads are
-  anonymous + temporary (~30-day expiry). Sign-in (permanent uploads) is slice 3.
-- **Trial gate is a soft nudge in v0** — there's no sign-in yet to unblock it, so
-  crossing the 5-upload limit only notifies; it keeps uploading. Make it a real
-  gate only alongside the sign-in flow.
+- **Auth is a cached, fail-closed session.** The API key is read once from the
+  keychain at startup into `AppState.session` and used from there — never per
+  upload (a transient keychain error must not silently downgrade a signed-in user
+  to anonymous). `sign_out` surfaces delete errors; a 401/403 clears the session
+  and re-prompts.
+- **The trial gate is HARD.** Signed-out, after 5 free anonymous uploads, further
+  uploads are blocked — `run_upload` returns `Ok(None)`, prompts sign-in, and puts
+  no URL on the clipboard. Signed-in users are keyed + unlimited. It's client-side
+  and bypassable by design; the server-side anonymous rate limiter is the real ceiling.
+- **`upload_and_notify` returns `Result<Option<String>>`** — `Some(url)` uploaded,
+  `None` gated (caller does nothing — no false "Upload failed"), `Err` real failure.
+- **The keyless (no-key) upload path is anonymous + temporary (~30 days).**
 - **`state.json` format is backward-compatible** — new fields use serde defaults;
   keep it that way so existing installs don't lose their counter.
 
 ## CI
 
-`.github/workflows/build.yml` builds macOS (universal) and Linux on every push to
-`main` and every PR, and attaches bundles to a GitHub Release on `v*` tags.
-Binaries are **unsigned** (no Apple/Developer certs) — expect a Gatekeeper prompt.
+`.github/workflows/build.yml` builds macOS (universal) + Linux on every push to
+`main` and PR, and attaches bundles to a draft GitHub Release on `v*` tags.
+Binaries are **unsigned** today (Gatekeeper prompt). Apple signing/notarization is
+**wired but off** — set the repo variable `APPLE_SIGNING_ENABLED=true` + the six
+`APPLE_*` secrets to enable it. (The vars must be *absent*, not empty, when off — an
+empty `APPLE_CERTIFICATE` makes the Tauri bundler fail; hence the conditional
+`Configure Apple signing` step.)
+
+`.github/workflows/update-cask.yml` bumps the Homebrew cask on a published release
+— disabled until `HOMEBREW_AUTO_BUMP=true` + a `HOMEBREW_TAP_TOKEN` PAT (with
+`contents:write` on the tap repo) are set.
+
+## Distribution
+
+- **Releases:** push a `v*` tag → CI builds + attaches a draft GitHub Release;
+  publish it manually.
+- **Homebrew:** `brew install --cask pixelvault-dev/tap/pixelvault` (tap repo
+  `pixelvault-dev/homebrew-tap`, `Casks/pixelvault.rb`). Bump `version` + `sha256`
+  per release (automatable via `update-cask.yml`).
+- **Landing page + comparison blog post:** `pixelvault.dev/desktop` and
+  `/blog/images-into-cloud-coding-agents`, in the main `pixelvault` repo (`apps/web`).
+- **In-agent skill:** `/pixelvault-desktop` in the `pixelvault-dev/skill` plugin.
