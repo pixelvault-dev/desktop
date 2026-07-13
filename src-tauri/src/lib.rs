@@ -70,6 +70,10 @@ fn handle_unauthorized(app: &AppHandle) {
     if let Ok(mut g) = app.state::<AppState>().session.lock() {
         *g = None;
     }
+    // Drop any signed (private) URLs from the tray — the session that could
+    // mint them is gone.
+    app.state::<AppState>().trial.forget_private_recent();
+    refresh_recent(app);
     refresh_account(app);
     notify(
         app,
@@ -88,6 +92,21 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) {
         .title(title)
         .body(body)
         .show();
+}
+
+/// Render a duration in whole days/hours for a human-facing message. The signed
+/// URL lifetimes we use are all whole days or hours (see the UI picker).
+fn human_duration(secs: u64) -> String {
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    if secs % 86_400 == 0 {
+        plural(secs / 86_400, "day")
+    } else if secs % 3_600 == 0 {
+        plural(secs / 3_600, "hour")
+    } else if secs % 60 == 0 {
+        plural(secs / 60, "minute")
+    } else {
+        plural(secs, "second")
+    }
 }
 
 /// Ephemeral TTL applied to signed-in (keyed) uploads: 30 days.
@@ -119,14 +138,21 @@ fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, Str
             };
             match upload::upload_png(png_bytes, Some(&key), opts) {
                 Ok(url) => {
-                    app.state::<AppState>().trial.push_recent(&url);
+                    app.state::<AppState>().trial.push_recent(&url, private);
                     refresh_recent(app);
-                    let title = if private {
-                        "Private URL copied"
+                    // The signed URL is a bearer capability; keep it off the
+                    // notification (Notification Center history / lock screen).
+                    // It's already on the clipboard + in the tray for this
+                    // session.
+                    if private {
+                        notify(
+                            app,
+                            "Private link copied",
+                            &format!("Paste to share · link expires in {}", human_duration(sign_secs)),
+                        );
                     } else {
-                        "Image URL copied"
-                    };
-                    notify(app, title, &url);
+                        notify(app, "Image URL copied", &url);
+                    }
                     Ok(Some(url))
                 }
                 // Revoked/expired key — clear the session and prompt re-sign-in.
@@ -333,6 +359,9 @@ fn sign_out(app: AppHandle) -> Result<(), String> {
     if let Ok(mut g) = app.state::<AppState>().session.lock() {
         *g = None;
     }
+    // Forget signed (private) URLs so a capability link doesn't linger post-sign-out.
+    app.state::<AppState>().trial.forget_private_recent();
+    refresh_recent(&app);
     refresh_account(&app);
     Ok(())
 }
@@ -360,9 +389,9 @@ fn get_settings(app: AppHandle) -> Settings {
 /// reflects exactly what was saved.
 #[tauri::command]
 fn set_settings(app: AppHandle, private_uploads: bool, sign_expires_secs: u64) -> Settings {
-    let trial = &app.state::<AppState>().trial;
-    trial.set_private_uploads(private_uploads);
-    trial.set_sign_expires_secs(sign_expires_secs);
+    app.state::<AppState>()
+        .trial
+        .set_upload_prefs(private_uploads, sign_expires_secs);
     read_settings(&app)
 }
 

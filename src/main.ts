@@ -25,6 +25,17 @@ const EXPIRY_OPTIONS: { label: string; secs: number }[] = [
   { label: "30 days", secs: 2592000 },
 ];
 
+/** Human label for an arbitrary (e.g. hand-edited) lifetime in seconds. */
+function expiryLabel(secs: number): string {
+  const known = EXPIRY_OPTIONS.find((o) => o.secs === secs);
+  if (known) return known.label;
+  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  if (secs % 86400 === 0) return plural(secs / 86400, "day");
+  if (secs % 3600 === 0) return plural(secs / 3600, "hour");
+  if (secs % 60 === 0) return plural(secs / 60, "minute");
+  return plural(secs, "second");
+}
+
 function esc(s: string): string {
   return s.replace(
     /[&<>"']/g,
@@ -56,12 +67,25 @@ async function refresh(): Promise<void> {
 /** Render the private-uploads controls (only shown while signed in). */
 async function renderSettings(): Promise<void> {
   const current = await invoke<Settings>("get_settings");
-  const opts = EXPIRY_OPTIONS.map(
-    (o) =>
-      `<option value="${o.secs}"${
-        o.secs === current.sign_expires_secs ? " selected" : ""
-      }>${o.label}</option>`
-  ).join("");
+  // Always include the stored value so an off-grid (e.g. hand-edited) lifetime
+  // is represented and selected — otherwise the <select> would default to the
+  // first option and the next save would silently overwrite it.
+  const choices = EXPIRY_OPTIONS.some(
+    (o) => o.secs === current.sign_expires_secs
+  )
+    ? EXPIRY_OPTIONS
+    : [
+        { label: expiryLabel(current.sign_expires_secs), secs: current.sign_expires_secs },
+        ...EXPIRY_OPTIONS,
+      ];
+  const opts = choices
+    .map(
+      (o) =>
+        `<option value="${o.secs}"${
+          o.secs === current.sign_expires_secs ? " selected" : ""
+        }>${o.label}</option>`
+    )
+    .join("");
 
   settings.innerHTML = `
     <label class="set-row">
