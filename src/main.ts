@@ -9,7 +9,21 @@ interface AuthStatus {
   remaining: number;
 }
 
+interface Settings {
+  private_uploads: boolean;
+  sign_expires_secs: number;
+}
+
 const account = document.getElementById("account")!;
+const settings = document.getElementById("settings")!;
+
+/** Signed-URL lifetime choices (seconds), shown in the expiry picker. */
+const EXPIRY_OPTIONS: { label: string; secs: number }[] = [
+  { label: "1 hour", secs: 3600 },
+  { label: "1 day", secs: 86400 },
+  { label: "7 days", secs: 604800 },
+  { label: "30 days", secs: 2592000 },
+];
 
 function esc(s: string): string {
   return s.replace(
@@ -30,9 +44,71 @@ async function refresh(): Promise<void> {
   const status = await invoke<AuthStatus>("auth_status");
   if (status.signed_in && status.email) {
     renderSignedIn(status.email);
+    await renderSettings();
   } else {
     renderSignedOut(status.remaining);
+    // Private uploads require a signed-in secret key — hide the controls.
+    settings.hidden = true;
+    settings.innerHTML = "";
   }
+}
+
+/** Render the private-uploads controls (only shown while signed in). */
+async function renderSettings(): Promise<void> {
+  const current = await invoke<Settings>("get_settings");
+  const opts = EXPIRY_OPTIONS.map(
+    (o) =>
+      `<option value="${o.secs}"${
+        o.secs === current.sign_expires_secs ? " selected" : ""
+      }>${o.label}</option>`
+  ).join("");
+
+  settings.innerHTML = `
+    <label class="set-row">
+      <input id="private-toggle" type="checkbox"${
+        current.private_uploads ? " checked" : ""
+      } />
+      <span>
+        <span class="set-title">Private uploads</span>
+        <span class="set-sub">Paste a signed URL only you can share, instead of a public link.</span>
+      </span>
+    </label>
+    <div class="set-row set-expiry"${current.private_uploads ? "" : " hidden"}>
+      <label class="set-title" for="expiry">Link expires after</label>
+      <select id="expiry">${opts}</select>
+    </div>
+    <p class="acct-msg" id="set-msg"></p>
+  `;
+  settings.hidden = false;
+
+  const toggle = settings.querySelector<HTMLInputElement>("#private-toggle")!;
+  const expiryRow = settings.querySelector<HTMLDivElement>(".set-expiry")!;
+  const expiry = settings.querySelector<HTMLSelectElement>("#expiry")!;
+  const msg = settings.querySelector<HTMLParagraphElement>("#set-msg")!;
+
+  async function save(): Promise<void> {
+    try {
+      await invoke("set_settings", {
+        privateUploads: toggle.checked,
+        signExpiresSecs: Number(expiry.value),
+      });
+      setMsg(
+        msg,
+        toggle.checked
+          ? "New uploads will be private."
+          : "New uploads will be public.",
+        false
+      );
+    } catch (e) {
+      setMsg(msg, String(e), true);
+    }
+  }
+
+  toggle.addEventListener("change", () => {
+    expiryRow.hidden = !toggle.checked;
+    void save();
+  });
+  expiry.addEventListener("change", () => void save());
 }
 
 function renderSignedOut(remaining: number): void {

@@ -106,20 +106,37 @@ pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<S
 fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, String> {
     match current_key(app) {
         // Signed in → keyed, ephemeral (30d) upload; not part of the free trial.
-        Some(key) => match upload::upload_png(png_bytes, Some(&key), Some(EPHEMERAL_SECS)) {
-            Ok(url) => {
-                app.state::<AppState>().trial.push_recent(&url);
-                refresh_recent(app);
-                notify(app, "Image URL copied", &url);
-                Ok(Some(url))
+        // Honour the private-uploads preference (signed URLs) from settings.
+        Some(key) => {
+            let (private, sign_secs) = {
+                let trial = &app.state::<AppState>().trial;
+                (trial.private_uploads(), trial.sign_expires_secs())
+            };
+            let opts = upload::KeyedOptions {
+                expires_in: Some(EPHEMERAL_SECS),
+                private,
+                sign_expires_in: private.then_some(sign_secs),
+            };
+            match upload::upload_png(png_bytes, Some(&key), opts) {
+                Ok(url) => {
+                    app.state::<AppState>().trial.push_recent(&url);
+                    refresh_recent(app);
+                    let title = if private {
+                        "Private URL copied"
+                    } else {
+                        "Image URL copied"
+                    };
+                    notify(app, title, &url);
+                    Ok(Some(url))
+                }
+                // Revoked/expired key — clear the session and prompt re-sign-in.
+                Err(upload::UploadError::Unauthorized) => {
+                    handle_unauthorized(app);
+                    Ok(None)
+                }
+                Err(e) => Err(e.message()),
             }
-            // Revoked/expired key — clear the session and prompt re-sign-in.
-            Err(upload::UploadError::Unauthorized) => {
-                handle_unauthorized(app);
-                Ok(None)
-            }
-            Err(e) => Err(e.message()),
-        },
+        }
         // Signed out → anonymous trial. Reserve a slot atomically; if the free
         // limit is reached, HARD-gate: stop and prompt sign-in (a trial that
         // never blocks converts no one). Bypassable by design (client-side).
@@ -133,7 +150,7 @@ fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, Str
                 open_settings(app);
                 return Ok(None);
             }
-            match upload::upload_png(png_bytes, None, None) {
+            match upload::upload_png(png_bytes, None, upload::KeyedOptions::default()) {
                 Ok(url) => {
                     app.state::<AppState>().trial.commit_reserved(&url);
                     refresh_counter(app);
@@ -320,6 +337,35 @@ fn sign_out(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct Settings {
+    private_uploads: bool,
+    sign_expires_secs: u64,
+}
+
+fn read_settings(app: &AppHandle) -> Settings {
+    let trial = &app.state::<AppState>().trial;
+    Settings {
+        private_uploads: trial.private_uploads(),
+        sign_expires_secs: trial.sign_expires_secs(),
+    }
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Settings {
+    read_settings(&app)
+}
+
+/// Persist the upload settings. Returns the stored (clamped) values so the UI
+/// reflects exactly what was saved.
+#[tauri::command]
+fn set_settings(app: AppHandle, private_uploads: bool, sign_expires_secs: u64) -> Settings {
+    let trial = &app.state::<AppState>().trial;
+    trial.set_private_uploads(private_uploads);
+    trial.set_sign_expires_secs(sign_expires_secs);
+    read_settings(&app)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -330,7 +376,9 @@ pub fn run() {
             sign_in_start,
             sign_in_complete,
             auth_status,
-            sign_out
+            sign_out,
+            get_settings,
+            set_settings
         ])
         .setup(|app| {
             // Menubar-first: no dock icon on macOS.
