@@ -61,6 +61,15 @@ pub fn load_session() -> Result<Option<Session>, String> {
 }
 
 fn store(api_key: &str, email: &str) -> Result<(), String> {
+    // Clear any prior entry first. On macOS `set_password` can fail with
+    // errSecDuplicateItem ("item already exists") when an item is already
+    // present — e.g. a partial earlier sign-in, or a keychain ACL that no longer
+    // matches an unsigned dev rebuild (each rebuild has a different signature).
+    // Deleting first means we always create a fresh item owned by the current
+    // binary, avoiding the duplicate error and an extra access prompt. Best
+    // effort: a delete failure shouldn't block the set that follows.
+    let _ = delete("api_key");
+    let _ = delete("email");
     entry("api_key")?
         .set_password(api_key)
         .map_err(|e| e.to_string())?;

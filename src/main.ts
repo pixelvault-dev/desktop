@@ -51,16 +51,33 @@ function setMsg(el: HTMLElement, text: string, isError: boolean): void {
   el.classList.toggle("error", isError);
 }
 
+/** Whether the account section currently shows the signed-in view (null = not
+ *  yet rendered). Used to avoid re-rendering — and wiping an in-progress sign-in
+ *  form — when the window merely regains focus without an auth-state change. */
+let signedInView: boolean | null = null;
+
 async function refresh(): Promise<void> {
   const status = await invoke<AuthStatus>("auth_status");
-  if (status.signed_in && status.email) {
-    renderSignedIn(status.email);
+  signedInView = status.signed_in && !!status.email;
+  if (signedInView) {
+    renderSignedIn(status.email!);
     await renderSettings();
   } else {
     renderSignedOut(status.remaining);
     // Private uploads require a signed-in secret key — hide the controls.
     settings.hidden = true;
     settings.innerHTML = "";
+  }
+}
+
+/** Focus-regain handler: only re-render when the signed-in/out state actually
+ *  changed (e.g. the session ended elsewhere). Otherwise leave the DOM alone so
+ *  a half-typed email or verification code survives an app switch. */
+async function refreshOnFocus(): Promise<void> {
+  const status = await invoke<AuthStatus>("auth_status");
+  const nowSignedIn = status.signed_in && !!status.email;
+  if (nowSignedIn !== signedInView) {
+    await refresh();
   }
 }
 
@@ -219,11 +236,11 @@ window.addEventListener("DOMContentLoaded", () => {
   refresh().catch((e) => console.error(e));
 
   // The window is hidden/shown from the tray (and the hard gate), not reloaded,
-  // so DOMContentLoaded fires only once. Re-render whenever it regains focus so
-  // the counter + auth state are never stale.
+  // so DOMContentLoaded fires only once. On refocus, reconcile auth state — but
+  // only re-render if it changed, so we never wipe an in-progress sign-in form.
   getCurrentWindow()
     .onFocusChanged(({ payload: focused }) => {
-      if (focused) refresh().catch((e) => console.error(e));
+      if (focused) refreshOnFocus().catch((e) => console.error(e));
     })
     .catch((e) => console.error(e));
 });
