@@ -74,6 +74,9 @@ async function refresh(): Promise<void> {
  *  changed (e.g. the session ended elsewhere). Otherwise leave the DOM alone so
  *  a half-typed email or verification code survives an app switch. */
 async function refreshOnFocus(): Promise<void> {
+  // Defer to the initial render if it hasn't set the view yet, so an early
+  // focus event doesn't fire a redundant re-render.
+  if (signedInView === null) return;
   const status = await invoke<AuthStatus>("auth_status");
   const nowSignedIn = status.signed_in && !!status.email;
   if (nowSignedIn !== signedInView) {

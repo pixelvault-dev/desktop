@@ -129,6 +129,16 @@ impl TrialState {
             .unwrap_or_default()
     }
 
+    /// Recent entries as `(url, is_private)`, for callers that must treat a
+    /// private (signed, bearer) URL differently — e.g. keeping it out of a
+    /// notification body or the menu label.
+    pub fn recent_entries(&self) -> Vec<(String, bool)> {
+        self.recent
+            .lock()
+            .map(|r| r.iter().map(|e| (e.url.clone(), e.private)).collect())
+            .unwrap_or_default()
+    }
+
     /// Whether signed-in uploads should be made private (signed URLs).
     pub fn private_uploads(&self) -> bool {
         self.private_uploads.load(Ordering::Relaxed)
@@ -255,6 +265,14 @@ impl TrialState {
         // to defaults). `rename` is atomic on the same filesystem.
         let tmp = self.path.with_extension("json.tmp");
         if fs::write(&tmp, json).is_ok() {
+            // Owner-only: state.json holds upload history + prefs, so keep it out
+            // of other local users' reach. Set on the temp file before the
+            // rename so the final file is never briefly world-readable.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+            }
             let _ = fs::rename(&tmp, &self.path);
         }
     }

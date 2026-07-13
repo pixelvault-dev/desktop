@@ -270,7 +270,7 @@ pub fn refresh_account(app: &AppHandle) {
 /// show the image filename and are clickable (copy the URL); empty slots show
 /// "—" and are disabled.
 pub fn refresh_recent(app: &AppHandle) {
-    let recent = app.state::<AppState>().trial.recent();
+    let recent = app.state::<AppState>().trial.recent_entries();
     let items = app
         .state::<AppState>()
         .recent_items
@@ -281,7 +281,7 @@ pub fn refresh_recent(app: &AppHandle) {
 
     let updates: Vec<(String, bool)> = (0..items.len())
         .map(|i| match recent.get(i) {
-            Some(url) => (short_label(url), true),
+            Some((url, private)) => (short_label(url, *private), true),
             None => ("—".to_string(), false),
         })
         .collect();
@@ -294,9 +294,17 @@ pub fn refresh_recent(app: &AppHandle) {
     });
 }
 
-/// Label a URL by its final path segment, e.g. `anon_l4f8nipug8ic.png`.
-fn short_label(url: &str) -> String {
-    url.rsplit('/').next().unwrap_or(url).to_string()
+/// Label a recent upload for the tray by its final path segment, e.g.
+/// `anon_l4f8nipug8ic.png`. The query string is dropped so a signed URL's token
+/// never appears in the menu; private links get a lock marker.
+fn short_label(url: &str, private: bool) -> String {
+    let last = url.rsplit('/').next().unwrap_or(url);
+    let name = last.split('?').next().unwrap_or(last);
+    if private {
+        format!("🔒 {name}")
+    } else {
+        name.to_string()
+    }
 }
 
 /// Toggle the passive watcher on/off and update the tray label.
@@ -459,4 +467,33 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{human_duration, short_label};
+
+    #[test]
+    fn short_label_strips_the_signing_token() {
+        // A signed (private) URL's token must never reach the tray label.
+        let signed = "https://img.pixelvault.dev/proj/cp/i/img_abc.png?token=SECRET&expires=123";
+        assert_eq!(short_label(signed, true), "🔒 img_abc.png");
+        assert!(!short_label(signed, true).contains("SECRET"));
+    }
+
+    #[test]
+    fn short_label_public_is_plain_filename() {
+        assert_eq!(
+            short_label("https://img.pixelvault.dev/proj/anon_xyz.png", false),
+            "anon_xyz.png"
+        );
+    }
+
+    #[test]
+    fn human_duration_reads_naturally() {
+        assert_eq!(human_duration(7 * 24 * 60 * 60), "7 days");
+        assert_eq!(human_duration(24 * 60 * 60), "1 day");
+        assert_eq!(human_duration(3600), "1 hour");
+        assert_eq!(human_duration(60), "1 minute");
+    }
 }
