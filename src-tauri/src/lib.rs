@@ -70,6 +70,10 @@ fn handle_unauthorized(app: &AppHandle) {
     if let Ok(mut g) = app.state::<AppState>().session.lock() {
         *g = None;
     }
+    // Drop any signed (private) URLs from the tray — the session that could
+    // mint them is gone.
+    app.state::<AppState>().trial.forget_private_recent();
+    refresh_recent(app);
     refresh_account(app);
     notify(
         app,
@@ -90,6 +94,21 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) {
         .show();
 }
 
+/// Render a duration in whole days/hours for a human-facing message. The signed
+/// URL lifetimes we use are all whole days or hours (see the UI picker).
+fn human_duration(secs: u64) -> String {
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    if secs % 86_400 == 0 {
+        plural(secs / 86_400, "day")
+    } else if secs % 3_600 == 0 {
+        plural(secs / 3_600, "hour")
+    } else if secs % 60 == 0 {
+        plural(secs / 60, "minute")
+    } else {
+        plural(secs, "second")
+    }
+}
+
 /// Ephemeral TTL applied to signed-in (keyed) uploads: 30 days.
 const EPHEMERAL_SECS: u64 = 30 * 24 * 60 * 60;
 
@@ -106,20 +125,44 @@ pub fn upload_and_notify(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<S
 fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, String> {
     match current_key(app) {
         // Signed in → keyed, ephemeral (30d) upload; not part of the free trial.
-        Some(key) => match upload::upload_png(png_bytes, Some(&key), Some(EPHEMERAL_SECS)) {
-            Ok(url) => {
-                app.state::<AppState>().trial.push_recent(&url);
-                refresh_recent(app);
-                notify(app, "Image URL copied", &url);
-                Ok(Some(url))
+        // Honour the private-uploads preference (signed URLs) from settings.
+        Some(key) => {
+            let (private, sign_secs) = {
+                let trial = &app.state::<AppState>().trial;
+                (trial.private_uploads(), trial.sign_expires_secs())
+            };
+            let opts = upload::KeyedOptions {
+                expires_in: Some(EPHEMERAL_SECS),
+                private,
+                sign_expires_in: private.then_some(sign_secs),
+            };
+            match upload::upload_png(png_bytes, Some(&key), opts) {
+                Ok(url) => {
+                    app.state::<AppState>().trial.push_recent(&url, private);
+                    refresh_recent(app);
+                    // The signed URL is a bearer capability; keep it off the
+                    // notification (Notification Center history / lock screen).
+                    // It's already on the clipboard + in the tray for this
+                    // session.
+                    if private {
+                        notify(
+                            app,
+                            "Private link copied",
+                            &format!("Paste to share · link expires in {}", human_duration(sign_secs)),
+                        );
+                    } else {
+                        notify(app, "Image URL copied", &url);
+                    }
+                    Ok(Some(url))
+                }
+                // Revoked/expired key — clear the session and prompt re-sign-in.
+                Err(upload::UploadError::Unauthorized) => {
+                    handle_unauthorized(app);
+                    Ok(None)
+                }
+                Err(e) => Err(e.message()),
             }
-            // Revoked/expired key — clear the session and prompt re-sign-in.
-            Err(upload::UploadError::Unauthorized) => {
-                handle_unauthorized(app);
-                Ok(None)
-            }
-            Err(e) => Err(e.message()),
-        },
+        }
         // Signed out → anonymous trial. Reserve a slot atomically; if the free
         // limit is reached, HARD-gate: stop and prompt sign-in (a trial that
         // never blocks converts no one). Bypassable by design (client-side).
@@ -133,7 +176,7 @@ fn run_upload(app: &AppHandle, png_bytes: Vec<u8>) -> Result<Option<String>, Str
                 open_settings(app);
                 return Ok(None);
             }
-            match upload::upload_png(png_bytes, None, None) {
+            match upload::upload_png(png_bytes, None, upload::KeyedOptions::default()) {
                 Ok(url) => {
                     app.state::<AppState>().trial.commit_reserved(&url);
                     refresh_counter(app);
@@ -227,7 +270,7 @@ pub fn refresh_account(app: &AppHandle) {
 /// show the image filename and are clickable (copy the URL); empty slots show
 /// "—" and are disabled.
 pub fn refresh_recent(app: &AppHandle) {
-    let recent = app.state::<AppState>().trial.recent();
+    let recent = app.state::<AppState>().trial.recent_entries();
     let items = app
         .state::<AppState>()
         .recent_items
@@ -238,7 +281,7 @@ pub fn refresh_recent(app: &AppHandle) {
 
     let updates: Vec<(String, bool)> = (0..items.len())
         .map(|i| match recent.get(i) {
-            Some(url) => (short_label(url), true),
+            Some((url, private)) => (short_label(url, *private), true),
             None => ("—".to_string(), false),
         })
         .collect();
@@ -251,9 +294,17 @@ pub fn refresh_recent(app: &AppHandle) {
     });
 }
 
-/// Label a URL by its final path segment, e.g. `anon_l4f8nipug8ic.png`.
-fn short_label(url: &str) -> String {
-    url.rsplit('/').next().unwrap_or(url).to_string()
+/// Label a recent upload for the tray by its final path segment, e.g.
+/// `anon_l4f8nipug8ic.png`. The query string is dropped so a signed URL's token
+/// never appears in the menu; private links get a lock marker.
+fn short_label(url: &str, private: bool) -> String {
+    let last = url.rsplit('/').next().unwrap_or(url);
+    let name = last.split('?').next().unwrap_or(last);
+    if private {
+        format!("🔒 {name}")
+    } else {
+        name.to_string()
+    }
 }
 
 /// Toggle the passive watcher on/off and update the tray label.
@@ -316,8 +367,40 @@ fn sign_out(app: AppHandle) -> Result<(), String> {
     if let Ok(mut g) = app.state::<AppState>().session.lock() {
         *g = None;
     }
+    // Forget signed (private) URLs so a capability link doesn't linger post-sign-out.
+    app.state::<AppState>().trial.forget_private_recent();
+    refresh_recent(&app);
     refresh_account(&app);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct Settings {
+    private_uploads: bool,
+    sign_expires_secs: u64,
+}
+
+fn read_settings(app: &AppHandle) -> Settings {
+    let trial = &app.state::<AppState>().trial;
+    Settings {
+        private_uploads: trial.private_uploads(),
+        sign_expires_secs: trial.sign_expires_secs(),
+    }
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Settings {
+    read_settings(&app)
+}
+
+/// Persist the upload settings. Returns the stored (clamped) values so the UI
+/// reflects exactly what was saved.
+#[tauri::command]
+fn set_settings(app: AppHandle, private_uploads: bool, sign_expires_secs: u64) -> Settings {
+    app.state::<AppState>()
+        .trial
+        .set_upload_prefs(private_uploads, sign_expires_secs);
+    read_settings(&app)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -330,7 +413,9 @@ pub fn run() {
             sign_in_start,
             sign_in_complete,
             auth_status,
-            sign_out
+            sign_out,
+            get_settings,
+            set_settings
         ])
         .setup(|app| {
             // Menubar-first: no dock icon on macOS.
@@ -382,4 +467,33 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{human_duration, short_label};
+
+    #[test]
+    fn short_label_strips_the_signing_token() {
+        // A signed (private) URL's token must never reach the tray label.
+        let signed = "https://img.pixelvault.dev/proj/cp/i/img_abc.png?token=SECRET&expires=123";
+        assert_eq!(short_label(signed, true), "🔒 img_abc.png");
+        assert!(!short_label(signed, true).contains("SECRET"));
+    }
+
+    #[test]
+    fn short_label_public_is_plain_filename() {
+        assert_eq!(
+            short_label("https://img.pixelvault.dev/proj/anon_xyz.png", false),
+            "anon_xyz.png"
+        );
+    }
+
+    #[test]
+    fn human_duration_reads_naturally() {
+        assert_eq!(human_duration(7 * 24 * 60 * 60), "7 days");
+        assert_eq!(human_duration(24 * 60 * 60), "1 day");
+        assert_eq!(human_duration(3600), "1 hour");
+        assert_eq!(human_duration(60), "1 minute");
+    }
 }

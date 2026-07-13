@@ -181,3 +181,67 @@ button.secondary:hover {
 .acct-msg.error {
   color: var(--red);
 }
+
+/* Settings card (private uploads) — only shown when signed in. */
+.settings {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-align: left;
+}
+.set-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.set-row + .set-row {
+  margin-top: 12px;
+}
+.set-row input[type="checkbox"] {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.set-title {
+  display: block;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.set-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.set-expiry {
+  align-items: center;
+  gap: 8px;
+}
+.set-expiry .set-title {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.set-expiry select {
+  margin-left: auto;
+  padding: 7px 10px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+.set-expiry select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.settings .acct-msg {
+  min-height: 0;
+}
+.settings .acct-msg:empty {
+  margin: 0;
+}

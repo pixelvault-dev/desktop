@@ -52,11 +52,13 @@ PIXELVAULT_API_BASE=https://api-staging.pixelvault.dev npm run tauri dev
 - `lib.rs` — Tauri builder + `setup`: Accessory activation policy (no Dock icon),
   loads the cached session, manages `AppState`, builds the tray, spawns the
   watcher, registers the Mode B hotkey + the sign-in commands (`sign_in_start` /
-  `sign_in_complete` / `auth_status` / `sign_out`). Also the **shared `run_upload`
+  `sign_in_complete` / `auth_status` / `sign_out`) and the settings commands
+  (`get_settings` / `set_settings`). Also the **shared `run_upload`
   pipeline** (`upload_and_notify`): it branches on the cached session — signed-in
-  → keyed ephemeral upload; signed-out → anonymous trial with an atomic
-  reservation + hard gate. Plus `refresh_counter` / `refresh_recent` /
-  `refresh_account` / `set_busy` (tray updates, all on the main thread).
+  → keyed ephemeral upload (honouring the **private-uploads** preference → signed
+  URL); signed-out → anonymous trial with an atomic reservation + hard gate. Plus
+  `refresh_counter` / `refresh_recent` / `refresh_account` / `set_busy` (tray
+  updates, all on the main thread).
 - `watcher.rs` — **Mode A (passive):** background thread polls the clipboard
   (`arboard`) every 1.2s, hashes to dedupe, runs the shared pipeline, writes the
   URL back. Tracks a separate `gated_hash` so a gated image is retried once the
@@ -67,12 +69,16 @@ PIXELVAULT_API_BASE=https://api-staging.pixelvault.dev npm run tauri dev
   api_key}` is stored in the OS keychain (`keyring`); `load_session()` **fails
   closed** (a real keychain error propagates rather than flattening to "signed
   out"). `config.rs` holds the shared API base.
-- `upload.rs` — RGBA→PNG encode + multipart `POST /v1/images` (keyed = Bearer +
-  `expires_in`; else anonymous). Returns `UploadError::Unauthorized` on 401/403 so
-  the caller clears the session + re-prompts. Base from `PIXELVAULT_API_BASE`.
-- `state.rs` — `TrialState`: free-upload counter (limit 5) + last 5 URLs in
-  `<app_config_dir>/state.json`. Anonymous admission is atomic: `try_reserve`
-  (compare-exchange) → `commit_reserved` / `release`.
+- `upload.rs` — RGBA→PNG encode + multipart `POST /v1/images`. Keyed = Bearer +
+  `KeyedOptions` (`expires_in`; `visibility=private` + `sign_expires_in` when
+  private — the server returns the ready-to-paste **signed** URL); else anonymous
+  (always public). Returns `UploadError::Unauthorized` on 401/403 so the caller
+  clears the session + re-prompts; a `402` maps to a "private image limit reached"
+  message. Base from `PIXELVAULT_API_BASE`.
+- `state.rs` — `TrialState`: free-upload counter (limit 5) + last 5 URLs + the
+  **private-uploads** preference (`private_uploads` + `sign_expires_secs`, clamped
+  to 60s..30d, default 7d) in `<app_config_dir>/state.json`. Anonymous admission
+  is atomic: `try_reserve` (compare-exchange) → `commit_reserved` / `release`.
 - `tray.rs` — menu-bar icon (transparent template glyph) + menu: status, account
   ("Signed in as …" / "Not signed in"), free-uploads counter, "Recent uploads"
   click-to-copy, pause/resume, Account & Settings…, quit.

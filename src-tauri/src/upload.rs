@@ -49,15 +49,28 @@ pub fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, Str
     Ok(out.into_inner())
 }
 
+/// Options for a keyed (signed-in) upload.
+#[derive(Default)]
+pub struct KeyedOptions {
+    /// Ephemeral image TTL in seconds (when the image itself auto-archives).
+    pub expires_in: Option<u64>,
+    /// Upload privately (mint a signed URL). Requires a secret key.
+    pub private: bool,
+    /// Signed-URL lifetime in seconds when `private` (the pasted link's TTL).
+    pub sign_expires_in: Option<u64>,
+}
+
 /// Upload a PNG and return the hosted URL.
 ///
-/// - `api_key`: `Some` → keyed (permanent unless `expires_in` set); `None` →
-///   anonymous temporary.
-/// - `expires_in`: keyed ephemeral TTL in seconds (ignored when anonymous).
+/// - `api_key`: `Some` → keyed; `None` → anonymous temporary (always public).
+/// - `opts`: keyed-only knobs (image TTL, private/signed URL). Ignored when
+///   anonymous — the server ignores `visibility` without a secret key anyway.
+///
+/// For a private upload the returned URL is the **signed** URL, ready to paste.
 pub fn upload_png(
     png: Vec<u8>,
     api_key: Option<&str>,
-    expires_in: Option<u64>,
+    opts: KeyedOptions,
 ) -> Result<String, UploadError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -70,8 +83,14 @@ pub fn upload_png(
         .map_err(|e| UploadError::Failed(e.to_string()))?;
     let mut form = reqwest::blocking::multipart::Form::new().part("file", part);
     if api_key.is_some() {
-        if let Some(secs) = expires_in {
+        if let Some(secs) = opts.expires_in {
             form = form.text("expires_in", secs.to_string());
+        }
+        if opts.private {
+            form = form.text("visibility", "private");
+            if let Some(secs) = opts.sign_expires_in {
+                form = form.text("sign_expires_in", secs.to_string());
+            }
         }
     }
 
@@ -88,6 +107,9 @@ pub fn upload_png(
         }
         // Friendly, body-free messages for the common cases.
         let msg = match status.as_u16() {
+            402 => {
+                "Private image limit reached — upgrade for unlimited private images.".to_string()
+            }
             413 => "Image is too large.".to_string(),
             429 => "Rate limit reached — try again shortly.".to_string(),
             s => format!("Upload failed ({s})."),

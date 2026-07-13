@@ -105,11 +105,18 @@ fn handle_menu(app: &AppHandle, id: &str) {
 }
 
 fn copy_recent(app: &AppHandle, idx: usize) {
-    let recent = app.state::<AppState>().trial.recent();
-    if let Some(url) = recent.get(idx) {
+    let recent = app.state::<AppState>().trial.recent_entries();
+    if let Some((url, private)) = recent.get(idx) {
         if let Ok(mut clipboard) = arboard::Clipboard::new() {
             if clipboard.set_text(url.clone()).is_ok() {
-                crate::notify(app, "URL copied", url);
+                if *private {
+                    // The signed URL is a bearer capability — keep it off the
+                    // notification body (Notification Center history / lock
+                    // screen), same as the upload path. It's on the clipboard.
+                    crate::notify(app, "Private link copied", "Paste to share");
+                } else {
+                    crate::notify(app, "URL copied", url);
+                }
             }
         }
     }
