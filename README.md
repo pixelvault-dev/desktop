@@ -10,6 +10,11 @@ your clipboard — ready to paste into a coding agent that only accepts text
 (Codex cloud, Claude Code on the web, Cursor background agents, Daytona/e2b
 sandboxes). The remote side needs nothing installed; it just receives a URL.
 
+<p align="center">
+  <img src="assets/demo.gif" width="760"
+       alt="Copy a screenshot — a hosted img.pixelvault.dev URL lands on your clipboard — paste it into a cloud coding agent, which fetches and reads the image." />
+</p>
+
 ## Install
 
 **macOS** — [Homebrew](https://brew.sh):
