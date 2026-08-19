@@ -94,6 +94,12 @@ fn client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Identifies the desktop app to the API so signups made through it are
+/// attributed to this channel (server reads X-PixelVault-Client on
+/// device-login — see pixelvault lead-attribution spec). Version is the crate
+/// version at compile time, so it never drifts.
+const CLIENT_ID: &str = concat!("pixelvault-desktop/", env!("CARGO_PKG_VERSION"));
+
 #[derive(Deserialize)]
 struct ErrEnvelope {
     error: ErrBody,
@@ -114,7 +120,13 @@ fn error_message(body: &str, status: reqwest::StatusCode) -> String {
 pub fn device_start(email: &str) -> Result<(), String> {
     let resp = client()?
         .post(format!("{}/v1/auth/device/start", api_base()))
-        .json(&serde_json::json!({ "email": email }))
+        .header("X-PixelVault-Client", CLIENT_ID)
+        // `attribution.source` buckets a new-account signup to this channel; the
+        // server treats it as an untrusted hint and only stamps it on create.
+        .json(&serde_json::json!({
+            "email": email,
+            "attribution": { "source": "desktop" },
+        }))
         .send()
         .map_err(|e| e.to_string())?;
     let status = resp.status();
