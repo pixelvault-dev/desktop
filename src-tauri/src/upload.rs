@@ -36,6 +36,7 @@ struct UploadEnvelope {
 #[derive(Deserialize)]
 struct UploadData {
     url: String,
+    branded_url: Option<String>,
 }
 
 /// Encode raw RGBA8 bytes (as delivered by the clipboard) to a PNG byte vector.
@@ -120,5 +121,5 @@ pub fn upload_png(
     let env: UploadEnvelope = resp
         .json()
         .map_err(|e| UploadError::Failed(format!("bad response: {e}")))?;
-    Ok(env.data.url)
+    Ok(env.data.branded_url.unwrap_or(env.data.url))
 }

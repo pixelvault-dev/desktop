@@ -56,6 +56,7 @@ means an upload is in flight.
   gate**, a **Recent uploads** history in the tray menu, and optional **private,
   signed URLs** (a toggle in Settings — the app hands you a ready-to-paste signed
   link).
+- **Ready custom domain:** keyed uploads put the API-provided branded URL on the clipboard; the canonical PixelVault URL remains the fallback.
 
 Links are time-limited by design — this is a *paste-into-your-agent* tool, not
 long-term hosting. For permanent image hosting, use
